@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Growth Rings · 百年尺度下的美股</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="header">
+  <div class="header-inner">
+    <div class="header-title">Growth Rings</div>
+    <div class="header-freshness" id="headerFreshness">
+      <span class="hf-dot" aria-hidden="true"></span>
+      <span class="hf-text">加载中…</span>
+    </div>
+    <nav class="nav" id="nav">
+      <a class="nav-item active" href="#panel-price" data-panel="panel-price">走势</a>
+      <a class="nav-item" href="#panel-valuation" data-panel="panel-valuation">估值</a>
+      <a class="nav-item" href="#panel-cape" data-panel="panel-cape">席勒市盈率</a>
+      <a class="nav-item" href="#panel-vix" data-panel="panel-vix">恐慌指数</a>
+      <a class="nav-item" href="#panel-annual" data-panel="panel-annual">年度回报</a>
+      <a class="nav-item" href="#panel-annual-dist" data-panel="panel-annual-dist">回报分布</a>
+      <a class="nav-item" href="#panel-annualized-matrix" data-panel="panel-annualized-matrix">年化矩阵</a>
+      <a class="nav-item" href="#panel-drawdown" data-panel="panel-drawdown">回撤</a>
+      <a class="nav-item" href="#panel-intrayear" data-panel="panel-intrayear">年内回撤</a>
+      <a class="nav-item" href="#panel-volatility" data-panel="panel-volatility">波动率</a>
+      <a class="nav-item" href="#panel-eps" data-panel="panel-eps">EPS</a>
+      <a class="nav-item" href="#panel-treasury" data-panel="panel-treasury">国债收益率</a>
+      <a class="nav-item" href="#panel-yield-spread" data-panel="panel-yield-spread">股债利差</a>
+      <a class="nav-item" href="#panel-bull-bear" data-panel="panel-bull-bear">牛熊周期</a>
+      <a class="nav-item" href="#panel-rolling" data-panel="panel-rolling">滚动收益率</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="hero-inner">
+    <h1 class="hero-title">Growth Rings<span class="hero-title-cn">百年尺度下的美股</span></h1>
+    <p class="hero-subtitle">Time in the market.</p>
+    <div class="hero-badges" id="heroBadges"></div>
+  </div>
+</section>
+
+<main class="main" id="main">
+
+  <section class="panel" id="panel-price">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">S&P 500 长周期走势</h2>
+          <p class="panel-desc">自 1871 年以来 · 支持价格、对数、百分比三种视角</p>
+        </div>
+        <div class="panel-controls">
+          <div class="btn-group" id="priceRangeToggle">
+            <button class="btn active" data-range="all">全部</button>
+            <button class="btn" data-range="10y">近10年</button>
+            <button class="btn" data-range="5y">近5年</button>
+            <button class="btn" data-range="3y">近3年</button>
+            <button class="btn" data-range="1y">近1年</button>
+            <button class="btn" data-range="6m">近6月</button>
+            <button class="btn" data-range="3m">近3月</button>
+            <button class="btn" data-range="1m">近1月</button>
+          </div>
+          <div class="btn-group" id="priceScaleToggle">
+            <button class="btn active" data-scale="price">价格</button>
+            <button class="btn" data-scale="log">对数</button>
+            <button class="btn" data-scale="pct">百分比</button>
+          </div>
+        </div>
+      </div>
+      <div class="chart-container chart-hero" id="chartPrice"></div>
+      <div class="metric-strip" id="priceSummary"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-valuation">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">S&P 500 市盈率 / 市净率走势</h2>
+          <p class="panel-desc">PE（市盈率）月度 1871 至今 · PB（市净率）季度 1999 至今 · 最新值为每日快照 · 来源 multpl.com</p>
+        </div>
+        <div class="panel-controls">
+          <div class="btn-group" id="valuationToggle">
+            <button class="btn active" data-metric="pe">市盈率 PE</button>
+            <button class="btn" data-metric="pb">市净率 PB</button>
+          </div>
+        </div>
+      </div>
+      <div class="chart-container chart-medium" id="chartValuation"></div>
+      <div class="metric-strip" id="valuationSummary"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-cape">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">S&P 500 席勒市盈率（CAPE）</h2>
+          <p class="panel-desc">用过去 10 年经通胀调整后的平均盈利做分母，平滑景气波动 · 月度 1871 至今 · 每日自动更新 · 左轴 CAPE（数值）叠加右轴标普500点位（对数）</p>
+        </div>
+      </div>
+      <div class="chart-container chart-medium" id="chartCape"></div>
+      <div class="metric-strip" id="capeSummary"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-vix">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">恐慌指数与标普500</h2>
+          <p class="panel-desc">VIX 日频 + 标普500对数坐标 · 红色区间为 VIX 持续高于 30 的恐慌阶段</p>
+        </div>
+      </div>
+      <div class="chart-container chart-medium" id="chartVix"></div>
+      <div class="metric-strip" id="vixSummary"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-annual">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">S&P 500 年度回报</h2>
+          <p class="panel-desc">1871 年以来年度涨跌幅 · 用年度颗粒度看长期风险收益分布</p>
+        </div>
+        <div class="panel-controls">
+          <div class="btn-group" id="annualToggle">
+            <button class="btn active" data-mode="price">价格回报</button>
+            <button class="btn" data-mode="total">总回报（含股息）</button>
+          </div>
+        </div>
+      </div>
+      <div class="chart-container chart-medium" id="chartAnnual"></div>
+      <div class="metric-strip" id="annualSummary"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-annual-dist">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">S&P 500 年度回报分布</h2>
+          <p class="panel-desc">每一年按涨幅装入区间 · 平均约 10%，但单个年份极少落在均值附近</p>
+        </div>
+      </div>
+      <div class="chart-container chart-medium" id="chartAnnualDist"></div>
+      <div class="metric-strip" id="distSummary"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-annualized-matrix">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">S&P 500 跨年持有年化收益率</h2>
+          <p class="panel-desc">横轴买入年 → 纵轴卖出年的年化收益率 · 按年末点位估算，不含股息</p>
+        </div>
+      </div>
+      <div class="annualized-matrix-container" id="annualizedMatrix"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-drawdown">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">S&P 500 自高点回撤</h2>
+          <p class="panel-desc">距历史最高点的跌幅 · 回撤 ≥ 10% 的重大事件清单见下表</p>
+        </div>
+      </div>
+      <div class="chart-container chart-medium" id="chartDrawdown"></div>
+      <div class="drawdown-table-wrap" id="drawdownTableWrap">
+        <table class="data-table" id="drawdownTable">
+          <thead>
+            <tr>
+              <th>回调区间</th>
+              <th class="num">高点</th>
+              <th class="num">低点</th>
+              <th class="num">创新低天数</th>
+              <th class="num">跌幅</th>
+              <th class="num">再创新高天数</th>
+            </tr>
+          </thead>
+          <tbody id="drawdownTbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-intrayear">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">S&P 500 年内最大回撤 vs 全年涨幅</h2>
+          <p class="panel-desc">好年份也要扛住中途的坑 · 橙色柱为年内最大回撤，绿/红柱为全年涨幅</p>
+        </div>
+      </div>
+      <div class="chart-container chart-medium" id="chartIntrayear"></div>
+      <div class="metric-strip" id="intrayearSummary"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-volatility">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">S&P 500 波动率</h2>
+          <p class="panel-desc">20 日与 60 日年化波动率 · 灰色区间表示 NBER 经济衰退</p>
+        </div>
+      </div>
+      <div class="chart-container chart-medium" id="chartVolatility"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-eps">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">S&P 500 每股收益（EPS）</h2>
+          <p class="panel-desc">标普500 每股收益（TTM）· 上方 EPS 与标普500指数均为对数坐标 · 下方 EPS 同比增长率（数值） · 年频→季频 1871 至今</p>
+        </div>
+      </div>
+      <div class="chart-container chart-tall" id="chartEps"></div>
+      <div class="metric-strip" id="epsSummary"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-treasury">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">美国 10 年期国债收益率</h2>
+          <p class="panel-desc">FRED DGS10 日频 · 利率是资产定价的分母，也是"股债性价比"的另一半</p>
+        </div>
+      </div>
+      <div class="chart-container chart-medium" id="chartTreasury"></div>
+      <div class="metric-strip" id="treasurySummary"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-yield-spread">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">股债利差（股息率 − 10年期国债收益率）</h2>
+          <p class="panel-desc">股票与债券的相对性价比 · 利差为正表示股票相对债券更便宜 · 月度 1871 至今</p>
+        </div>
+      </div>
+      <div class="chart-container chart-medium" id="chartYieldSpread"></div>
+      <div class="metric-strip" id="yieldSpreadSummary"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-bull-bear">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">S&P 500 牛熊周期</h2>
+          <p class="panel-desc">以 ±20% 划分牛熊 · 标普500 对数坐标 · 绿色区间为牛市、红色区间为熊市</p>
+        </div>
+      </div>
+      <div class="chart-container chart-standard" id="chartBullBear"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-rolling">
+    <div class="panel-inner">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">滚动收益率</h2>
+          <p class="panel-desc">任意时点往回看 N 年的年化回报</p>
+        </div>
+      </div>
+      <div class="chart-container chart-medium" id="chartRolling"></div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <p class="footer-disclaimer">数据来源：Robert Shiller（1871-2023） + FRED（实时）· 仅供参考，不构成投资建议 · Growth Rings</p>
+  </div>
+</footer>
+
+<script src="js/echarts.min.js"></script>
+<script src="data/data.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

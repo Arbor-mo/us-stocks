@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+update_log.txt
+update.bat
+_shot_*.png
+_diag.html
+_edge_profile/
+.DS_Store
+Thumbs.db
