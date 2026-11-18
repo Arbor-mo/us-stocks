@@ -1079,7 +1079,9 @@ def main():
         eps_payload = {"series": {}, "last": None, "last_date": None, "source": None}
 
     payload = {
-        "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
+        # 必须带时区偏移：云端 runner 是 UTC、本机是 +08:00，
+        # 不带偏移的字符串会被浏览器按本地时区误读（差 8 小时）
+        "generated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "source": "Shiller (1871-2023.09) + FRED",
         "price": {
             "monthly": {str(d.date()): round(float(v), 2) for d, v in price.items()},
