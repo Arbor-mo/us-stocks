@@ -20,7 +20,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install pandas numpy requests openpyxl xlrd yfinance
+        run: pip install -r requirements.txt
 
       - name: Run pipeline
         run: python fetch_data.py
