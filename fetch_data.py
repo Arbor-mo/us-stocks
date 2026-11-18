@@ -15,7 +15,6 @@ Growth Rings 数据管线
 import os
 import json
 import time
-import sqlite3
 import datetime as dt
 
 import numpy as np
@@ -31,7 +30,13 @@ RAW_DIR = os.path.join(BASE_DIR, "data", "raw")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(RAW_DIR, exist_ok=True)
 
-SHILLER_URL = "http://www.econ.yale.edu/~shiller/data/ie_data.xls"
+# 席勒数据源：Yale 旧站已停在 2023.09，官网新链接更新更及时（当前到 2024.09）
+SHILLER_URLS = [
+    "https://img1.wsimg.com/blobby/go/e5e77e0b-59d1-44d9-ab25-4763ac982e53/downloads/ie_data.xls",
+    "https://shillerdata.com/download/ie_data.xls",
+    "http://www.econ.yale.edu/~shiller/data/ie_data.xls",
+]
+SHILLER_URL = SHILLER_URLS[0]
 SHILLER_PATH = os.path.join(RAW_DIR, "ie_data.xls")
 DAILY_CSV = os.path.join(RAW_DIR, "gspc_daily.csv")
 
@@ -42,31 +47,18 @@ REF_BASE = "https://laoqianritan-create-github-io.pages.dev"
 REF_VIX_URL = REF_BASE + "/data/sp500_vix.json"
 REF_PE_URL = REF_BASE + "/data/sp500_pe.json"
 REF_EPS_URL = REF_BASE + "/data/sp500_eps.json"
-DB_PATH = os.path.join(DATA_DIR, "history.db")
 
 # 代理配置（Yahoo 对大陆地域封锁，走本地代理绕过）
 PROXY_URL = "http://127.0.0.1:7897"
 
 
 def enable_proxy():
-    """本地代理可选：探测端口可通才启用，否则直连。
-    云端 runner（GitHub Actions）没有本地代理，必须直连。"""
-    if not PROXY_URL:
-        return
-    import socket
-    from urllib.parse import urlparse
-
-    u = urlparse(PROXY_URL)
-    try:
-        with socket.create_connection((u.hostname, u.port or 80), timeout=2):
-            pass
-    except OSError:
-        print(f"  [info] 代理 {PROXY_URL} 不可通，改用直连")
-        return
-    os.environ["HTTP_PROXY"] = PROXY_URL
-    os.environ["HTTPS_PROXY"] = PROXY_URL
-    os.environ["http_proxy"] = PROXY_URL
-    os.environ["https_proxy"] = PROXY_URL
+    """让 requests / yfinance 走本地代理。代理不可用时静默忽略。"""
+    if PROXY_URL:
+        os.environ["HTTP_PROXY"] = PROXY_URL
+        os.environ["HTTPS_PROXY"] = PROXY_URL
+        os.environ["http_proxy"] = PROXY_URL
+        os.environ["https_proxy"] = PROXY_URL
 
 
 # ---------------------------------------------------------------------------
@@ -196,16 +188,26 @@ def fetch_reference_cape():
 
 
 def fetch_vix_with_fallback():
-    """VIX：优先参考网站，失败回退 FRED VIXCLS。返回 (dict, last_date, last_value, source)。"""
-    data, last_date, last_value = fetch_reference_vix()
-    if data:
-        return data, last_date, last_value, "reference"
+    """VIX：取 FRED VIXCLS(1990+) 与参考站(2000+) 的并集，补回 1990 年代。
+    返回 (dict, last_date, last_value, source)。"""
+    merged = {}
+    sources = []
+
     s, s_date = fred_series("VIXCLS")
     if s is not None and len(s) > 0:
-        data = {str(d.date()): round(float(v), 2) for d, v in s.items()}
-        last_date = str(s_date.date()) if s_date is not None else str(s.index[-1].date())
-        return data, last_date, round(float(s.iloc[-1]), 2), "fred"
-    return None, None, None, None
+        merged.update({str(d.date()): round(float(v), 2) for d, v in s.items()})
+        sources.append("FRED")
+
+    data, _ld, _lv = fetch_reference_vix()
+    if data:
+        for k, v in data.items():
+            merged.setdefault(k, v)
+        sources.append("reference")
+
+    if not merged:
+        return None, None, None, None
+    ks = sorted(merged)
+    return merged, ks[-1], merged[ks[-1]], "+".join(sources)
 
 
 def fetch_cape_with_fallback():
@@ -250,45 +252,18 @@ def fetch_eps_with_fallback():
     return None, None, None, None
 
 
-def save_snapshot(vix_info, cape_info, eps_info):
-    """把本次抓取的 VIX/CAPE/EPS 快照写入 SQLite，供追溯历史。"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute("""CREATE TABLE IF NOT EXISTS snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            fetched_at TEXT,
-            vix_last REAL, vix_last_date TEXT, vix_count INTEGER, vix_source TEXT,
-            cape_last REAL, cape_last_date TEXT, cape_count INTEGER, cape_source TEXT
-        )""")
-        # 迁移：为旧表补齐 eps 列
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(snapshots)")}
-        for col, typ in [("eps_last", "REAL"), ("eps_last_date", "TEXT"),
-                         ("eps_count", "INTEGER"), ("eps_source", "TEXT")]:
-            if col not in cols:
-                conn.execute(f"ALTER TABLE snapshots ADD COLUMN {col} {typ}")
-        conn.execute(
-            "INSERT INTO snapshots (fetched_at, vix_last, vix_last_date, vix_count, vix_source, "
-            "cape_last, cape_last_date, cape_count, cape_source, "
-            "eps_last, eps_last_date, eps_count, eps_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (dt.datetime.now().isoformat(timespec="seconds"),
-             vix_info["last"], vix_info["last_date"], vix_info["count"], vix_info["source"],
-             cape_info["last"], cape_info["last_date"], cape_info["count"], cape_info["source"],
-             eps_info["last"], eps_info["last_date"], eps_info["count"], eps_info["source"]),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:  # noqa: BLE001
-        print(f"  [warn] save_snapshot fail: {e}")
-
-
 def load_shiller():
     """下载/加载席勒数据，返回清理后的月度 DataFrame。"""
     if not os.path.exists(SHILLER_PATH):
-        r = fetch(SHILLER_URL, timeout=90)
-        if r is None:
+        for url in SHILLER_URLS:
+            r = fetch(url, timeout=90, retries=2)
+            if r is not None and len(r.content) > 500_000:
+                with open(SHILLER_PATH, "wb") as f:
+                    f.write(r.content)
+                print(f"  [shiller] 已下载：{url}")
+                break
+        if not os.path.exists(SHILLER_PATH):
             raise RuntimeError("无法下载席勒数据 ie_data.xls")
-        with open(SHILLER_PATH, "wb") as f:
-            f.write(r.content)
     raw = pd.read_excel(SHILLER_PATH, sheet_name="Data", header=7)
     df = raw.dropna(subset=["Date"]).copy()
     df["Date"] = pd.to_numeric(df["Date"], errors="coerce")
@@ -308,28 +283,82 @@ def load_shiller():
 # 各类指标计算（全部基于席勒月度数据，保证百年历史）
 # ---------------------------------------------------------------------------
 def build_price_series(df):
-    """标普500 名义价格 + 实际价格(通胀调整) + 等权近似(无，这里用对数)"""
-    s = df.set_index("dt")["P"].dropna()
-    return s
+    """返回 (名义价格, 实际价格)。
+    实际价格用 CPI 折算到最新一期，便于同尺度比较百年购买力。
+    席勒表缺 CPI 时 real 为 None，调用方需容错。
+    """
+    idx = df.set_index("dt")
+    nominal = idx["P"].dropna()
+
+    real = None
+    if "CPI" in idx.columns:
+        cpi = pd.to_numeric(idx["CPI"], errors="coerce").reindex(nominal.index).ffill()
+        valid = cpi.dropna()
+        if len(valid) > 100:
+            base = valid.iloc[-1]
+            real = (nominal / cpi) * base
+            real = real.replace([np.inf, -np.inf], np.nan).dropna()
+    return nominal, real
+
+
+def build_real_returns(real_price):
+    """实际（通胀调整后）年度回报。real_price 为 None 时返回空 dict。"""
+    if real_price is None or len(real_price) == 0:
+        return {}
+    yearly = real_price.resample("YE").last()
+    ret = yearly.pct_change(fill_method=None).dropna() * 100
+    return {y.year: round(float(v), 2) for y, v in ret.items()}
+
+
+def build_real_price_full(price, df):
+    """
+    实际价格（通胀调整）全序列：席勒 CPI 打底，用 FRED CPIAUCNS 延伸到最新。
+    以最新一期 CPI 为基期，避免基期选择影响斜率。
+    """
+    idx = df.set_index("dt")
+    if "CPI" not in idx.columns:
+        return None
+    cpi = pd.to_numeric(idx["CPI"], errors="coerce").dropna()
+    if len(cpi) < 100:
+        return None
+
+    s, _ = fred_series("CPIAUCNS")
+    if s is not None and len(s) > 0:
+        s.index = s.index.to_period("M").to_timestamp()
+        s = s.groupby(level=0).last()
+        common = cpi.index.intersection(s.index)
+        if len(common) >= 12:
+            # 用重叠期把 FRED CPI 平移到席勒口径
+            factor = (cpi.loc[common] / s.loc[common]).median()
+            tail = s[s.index > cpi.index[-1]] * factor
+            if len(tail):
+                cpi = pd.concat([cpi, tail])
+                cpi = cpi[~cpi.index.duplicated(keep="last")].sort_index()
+
+    aligned = cpi.reindex(price.index).ffill()
+    real = (price / aligned) * cpi.iloc[-1]
+    return real.replace([np.inf, -np.inf], np.nan).dropna()
 
 
 def build_annual_returns(price):
     """年度涨跌幅（价格口径）。键为纯年份。"""
     yearly = price.resample("YE").last()
-    ret = yearly.pct_change().dropna() * 100
+    ret = yearly.pct_change(fill_method=None).dropna() * 100
     return {y.year: round(float(v), 2) for y, v in ret.items()}
 
 
-def build_annual_distribution(annual):
-    """把每一年按涨幅装进区间，返回计数。"""
+def build_annual_distribution(annual, exclude_years=None):
+    """把每一年按涨幅装进区间，返回计数。
+    exclude_years 用于排除未完成的年度（如当年只到 11 月），避免 YTD 混入统计。"""
+    exclude_years = exclude_years or set()
     bins = [(-100, -40), (-40, -20), (-20, -10), (-10, 0), (0, 10),
             (10, 20), (20, 30), (30, 40), (40, 50), (50, 100), (100, 9999)]
     labels = ["<-40%", "-40~-20", "-20~-10", "-10~0", "0~10",
               "10~20", "20~30", "30~40", "40~50", "50~100", ">100%"]
     counts = {lab: 0 for lab in labels}
-    years = []
     for y, v in annual.items():
-        years.append(y)
+        if y in exclude_years:
+            continue
         for (lo, hi), lab in zip(bins, labels):
             if lo <= v < hi:
                 counts[lab] += 1
@@ -427,6 +456,41 @@ def build_cape(df):
 def build_eps(df):
     s = df.set_index("dt")["E"].dropna()
     return s
+
+
+def merge_shiller_tail(shiller, tail):
+    """
+    席勒序列打底，第三方序列只补尾部。
+    重叠期用中位比例把第三方校准到席勒口径，避免接缝跳变。
+    返回 {date: value}（按日期升序）。
+    """
+    base = None
+    if shiller is not None and len(shiller) > 0:
+        base = pd.to_numeric(shiller, errors="coerce").dropna().copy()
+        base.index = base.index.to_period("M").to_timestamp()
+        base = base.groupby(level=0).last().sort_index()
+
+    if base is None or len(base) == 0:
+        return {str(k): round(float(v), 2) for k, v in (tail or {}).items()}
+
+    if not tail:
+        return {str(d.date()): round(float(v), 2) for d, v in base.items()}
+
+    ts = pd.Series({pd.Timestamp(k): float(v) for k, v in tail.items()}).dropna()
+    if len(ts) == 0:
+        return {str(d.date()): round(float(v), 2) for d, v in base.items()}
+    ts.index = ts.index.to_period("M").to_timestamp()
+    ts = ts.groupby(level=0).last().sort_index()
+
+    common = base.index.intersection(ts.index)
+    ratio = float((base.loc[common] / ts.loc[common]).median()) if len(common) >= 6 else 1.0
+
+    # 同时补头部（第三方可能比席勒更早）和尾部
+    head = ts[ts.index < base.index[0]] * ratio
+    extra = ts[ts.index > base.index[-1]] * ratio
+    merged = pd.concat([head, base, extra])
+    merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+    return {str(d.date()): round(float(v), 2) for d, v in merged.items()}
 
 
 def build_bull_bear(price):
@@ -647,6 +711,31 @@ def build_yield_spread(div_yield, gs10):
     return df["dy"] - df["gs10"]
 
 
+def build_erp(cape_series, gs10):
+    """
+    股权风险溢价（近似）= 盈利收益率(1/CAPE) - 10年期国债收益率，单位百分点。
+    用 CAPE 而非 TTM PE：平滑盈利周期，且与「席勒市盈率」面板同口径。
+    股息率版本的利差受分红率长期下滑污染（回购替代分红），这个更可比。
+    """
+    if not cape_series or gs10 is None or len(gs10) == 0:
+        return {}
+    if isinstance(cape_series, dict):
+        cs = pd.Series({pd.Timestamp(k): float(v) for k, v in cape_series.items()})
+    else:
+        cs = cape_series.copy()
+    cs = pd.to_numeric(cs, errors="coerce").dropna()
+    cs = cs[cs > 0].sort_index()
+    cs.index = pd.to_datetime(cs.index).to_period("M").to_timestamp()
+    cs = cs.groupby(level=0).last()
+
+    g = gs10.copy()
+    g.index = g.index.to_period("M").to_timestamp()
+    g = g.groupby(level=0).last()
+
+    df = pd.DataFrame({"cape": cs, "gs10": g}).dropna()
+    return (1.0 / df["cape"] * 100.0) - df["gs10"]
+
+
 # ---------------------------------------------------------------------------
 # 实时数据（FRED + yfinance，失败降级）
 # ---------------------------------------------------------------------------
@@ -672,12 +761,17 @@ def build_realtime():
 
 def extend_price(price, spx_daily):
     """
-    用 FRED 每日数据把价格序列从席勒末尾(2023.09)延伸到今天。
-    每月取月末值，去重、只取席勒末尾之后的日期。
+    用日线数据把价格序列从席勒末尾(2024.09)延伸到今天，每月取月末值。
+    优先用本地完整日线（gspc_daily.csv），其次才用 FRED SP500 ——
+    FRED 这个序列有时只返回最近一年，会把月度序列打出十几个月的洞。
     """
-    if spx_daily is None or len(spx_daily) == 0:
+    src = load_local_daily()
+    if src is None or len(src) < 1000:
+        src = spx_daily
+    if src is None or len(src) == 0:
         return price
-    monthly = spx_daily.resample("ME").last().dropna()
+
+    monthly = src.resample("ME").last().dropna()
     # FRED 月末 → 月初，与席勒(月初)对齐，避免同月出现两个标签
     monthly.index = monthly.index.to_period("M").to_timestamp()
     monthly = monthly[monthly.index > price.index[-1]]
@@ -799,6 +893,71 @@ def build_analysis_series(monthly_price, daily):
 
 
 # ---------------------------------------------------------------------------
+# 写入保护
+# ---------------------------------------------------------------------------
+def series_len(v):
+    """粗略估计一个 payload 的数据点数（需兼容各种嵌套结构）。"""
+    if isinstance(v, dict):
+        if isinstance(v.get("series"), dict):
+            return len(v["series"])
+        if isinstance(v.get("monthly"), dict):
+            return len(v["monthly"])
+        if isinstance(v.get("vol20"), dict):
+            return len(v["vol20"])
+        if isinstance(v.get("years"), list):
+            return len(v["years"])
+        if v and all(isinstance(x, dict) for x in v.values()):
+            # {档位: {日期: 数值}}（rolling，key 为 1/5/7/10/20）
+            # vs {年份: {字段: 值}}（intrayear，key 为 1871..2026）
+            try:
+                nums = [int(k) for k in v.keys()]
+                if max(nums) < 1000:
+                    return max(len(x) for x in v.values())
+            except (TypeError, ValueError):
+                pass
+            return len(v)
+        return len(v)
+    if isinstance(v, list):
+        return len(v)
+    return 0
+
+
+def write_or_keep(name, payload, required_min=0):
+    """
+    返回最终应采用的数据：
+      * 正常 → 写盘并返回新数据
+      * 点数骤降或低于下限 → 保留旧文件，返回旧数据
+    目的是防止抓取失败时用空数据覆盖历史（这种情况已实际发生过多次）。
+    """
+    fp = os.path.join(DATA_DIR, name + ".json")
+    new_len = series_len(payload)
+    reason = None
+
+    if required_min and new_len < required_min:
+        reason = f"仅 {new_len} 点（下限 {required_min}）"
+    elif os.path.exists(fp):
+        try:
+            with open(fp, encoding="utf-8") as f:
+                old_len = series_len(json.load(f))
+            if old_len >= 50 and new_len < old_len * 0.6:
+                reason = f"{new_len} 点 < 旧 {old_len} 点 × 60%"
+        except Exception:  # noqa: BLE001
+            pass
+
+    if reason:
+        print(f"  [guard] {name}: {reason}，保留旧文件")
+        try:
+            with open(fp, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:  # noqa: BLE001
+            return payload
+
+    with open(fp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    return payload
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 def main():
@@ -808,18 +967,35 @@ def main():
 
     print("[1/4] 加载席勒百年数据 ...")
     df = load_shiller()
-    price = build_price_series(df)
+    price, _ = build_price_series(df)
 
     print("[2/4] 拉取实时数据 (FRED) ...")
     realtime, spx_daily = build_realtime()
 
     print("[3/5] 延伸价格序列到最新并计算指标 ...")
     price = extend_price(price, spx_daily)
+    price_real = build_real_price_full(price, df)
     daily = build_daily_price(spx_daily)
     # 回撤/牛熊等指标用混合序列（早期月度 + 近期每日）
     analysis = build_analysis_series(price, daily)
     annual = build_annual_returns(price)
-    dist_counts, dist_labels = build_annual_distribution(annual)
+    annual_real = build_real_returns(price_real)
+    # 未完成年度（如当年只到 11 月）不计入分布与均值，避免 YTD 污染统计
+    _last = price.index[-1]
+    incomplete_years = {_last.year} if _last.month < 12 else set()
+    dist_counts, dist_labels = build_annual_distribution(annual, incomplete_years)
+
+    _vals = sorted(v for y, v in annual.items() if y not in incomplete_years)
+    if _vals:
+        _n = len(_vals)
+        _mean = sum(_vals) / _n
+        _median = _vals[_n // 2] if _n % 2 else (_vals[_n // 2 - 1] + _vals[_n // 2]) / 2
+        annual_stats = {
+            "mean": round(_mean, 2), "median": round(_median, 2), "n": _n,
+            "excluded_year": (sorted(incomplete_years)[0] if incomplete_years else None),
+        }
+    else:
+        annual_stats = {"mean": None, "median": None, "n": 0, "excluded_year": None}
     years, matrix = build_annualized_matrix(price)
     dd = build_drawdown(analysis)
     events = build_drawdown_events(analysis)
@@ -853,6 +1029,9 @@ def main():
         rolling = build_rolling_returns(daily, freq="daily")
     else:
         rolling = build_rolling_returns(price, freq="monthly")
+    # 总回报口径（含股息再投资）：回答“持有 N 年真实赚多少”应看这个
+    rolling_tr = build_rolling_returns(total_return, freq="monthly")
+    years_tr, matrix_tr = build_annualized_matrix(total_return)
 
     print("[3.5/5] 拉取 SPY 市盈率/市净率 (multpl) ...")
     spy_pe = multpl_series("https://www.multpl.com/s-p-500-pe-ratio/table/by-month")
@@ -863,37 +1042,41 @@ def main():
     cape_series, cape_last_date, cape_last, cape_src = fetch_cape_with_fallback()
     eps_series, eps_last_date, eps_last, eps_src = fetch_eps_with_fallback()
 
-    # 抓取 CAPE 失败时回退到席勒 xls 旧数据，避免面板空掉
-    if cape_series:
+    # CAPE：席勒原始数据打底，第三方只补尾部（重叠期按比例校准）
+    cape_merged = merge_shiller_tail(cape, cape_series or {})
+    if cape_merged:
+        _ck = sorted(cape_merged)
         cape_payload = {
-            "series": cape_series,
-            "last": cape_last,
-            "last_date": cape_last_date,
-            "source": cape_src,
+            "series": cape_merged,
+            "last": cape_merged[_ck[-1]],
+            "last_date": _ck[-1],
+            "source": "shiller+reference" if cape_series else "shiller_xls",
         }
     else:
-        cape_payload = {
-            "series": {str(d.date()): round(float(v), 2) for d, v in cape.items()},
-            "last": round(float(cape.iloc[-1]), 2),
-            "last_date": str(cape.index[-1].date()),
-            "source": "shiller_xls",
-        }
+        cape_payload = {"series": {}, "last": None, "last_date": None, "source": None}
 
-    # EPS：抓取失败时回退到席勒 xls 的 E 列（月度），避免面板空掉
+    # 股权风险溢价：盈利收益率(1/CAPE) − 10Y
+    erp = build_erp(cape_payload["series"], gs10_monthly)
+
+    # EPS：参考站为名义 TTM 口径，优先使用。
+    # 注意：席勒 E 列是「通胀调整后的实际 EPS」，与名义值不可直接拼接，
+    # 因此这里不做 merge，仅在参考站失败时整体回退（并在 source 里标注口径差异）。
     if eps_series:
         eps_payload = {
             "series": eps_series,
-            "last": eps_last,
-            "last_date": eps_last_date,
-            "source": eps_src,
+            "last": eps_last if eps_last is not None else list(eps_series.values())[-1],
+            "last_date": eps_last_date or list(eps_series.keys())[-1],
+            "source": "reference",
         }
-    else:
+    elif len(eps):
         eps_payload = {
             "series": {str(d.date()): round(float(v), 2) for d, v in eps.items()},
             "last": round(float(eps.iloc[-1]), 2),
             "last_date": str(eps.index[-1].date()),
-            "source": "shiller_xls",
+            "source": "shiller_xls（实际值，非名义）",
         }
+    else:
+        eps_payload = {"series": {}, "last": None, "last_date": None, "source": None}
 
     payload = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
@@ -905,15 +1088,21 @@ def main():
             "daily_end": str(daily.index[-1].date()) if daily is not None else None,
             "start": str(price.index[0].date()),
             "end": str(price.index[-1].date()),
+            "real": ({str(d.date()): round(float(v), 2) for d, v in price_real.items()}
+                     if price_real is not None and len(price_real) else {}),
         },
         "annual_returns": annual,
+        "annual_returns_real": annual_real,
         "annual_distribution": {"labels": dist_labels, "counts": dist_counts},
+        "annual_stats": annual_stats,
         "annualized_matrix": {"years": years, "matrix": matrix},
+        "annualized_matrix_tr": {"years": years_tr, "matrix": matrix_tr},
         "drawdown": {
             "series": {str(d.date()): round(float(v), 2) for d, v in dd.items()},
             "events": events,
         },
         "volatility": {
+            "freq": "daily" if use_daily else "monthly",
             "vol20": {str(d.date()): round(float(v), 2) for d, v in vol20.dropna().items()},
             "vol60": {str(d.date()): round(float(v), 2) for d, v in vol60.dropna().items()},
         },
@@ -928,9 +1117,11 @@ def main():
         "bull_bear_phases": phases,
         "analysis_price": {str(d.date()): round(float(v), 2) for d, v in analysis.items()},
         "rolling_returns": rolling,
+        "rolling_returns_tr": rolling_tr,
         "total_return": {str(d.date()): round(float(v), 2) for d, v in total_return.items()},
         "dividend_yield": {str(d.date()): round(float(v), 2) for d, v in div_yield.items()},
         "yield_spread": {str(d.date()): round(float(v), 2) for d, v in yield_spread.items()},
+        "erp": {str(d.date()): round(float(v), 2) for d, v in erp.items()} if len(erp) else {},
         "intrayear_drawdown": intrayear,
         "recessions": recessions,
         "treasury_yield": treasury,
@@ -939,61 +1130,47 @@ def main():
         "realtime": realtime,
     }
 
-    print("[4/5] 写入 JSON ...")
-    for name in ["price", "annual_returns", "annual_distribution", "annualized_matrix",
-                 "drawdown", "volatility", "cape", "vix", "eps", "bull_bear_phases",
-                 "rolling_returns", "total_return", "dividend_yield", "yield_spread",
-                 "intrayear_drawdown", "recessions", "treasury_yield", "spy_pe", "spy_pb", "analysis_price"]:
-        fp = os.path.join(DATA_DIR, name + ".json")
-        with open(fp, "w", encoding="utf-8") as f:
-            json.dump(payload[name], f, ensure_ascii=False)
-    fp = os.path.join(DATA_DIR, "realtime.json")
-    with open(fp, "w", encoding="utf-8") as f:
-        json.dump(payload["realtime"], f, ensure_ascii=False)
-    fp = os.path.join(DATA_DIR, "meta.json")
-    with open(fp, "w", encoding="utf-8") as f:
-        json.dump({"generated_at": payload["generated_at"], "source": payload["source"]},
-                  f, ensure_ascii=False)
+    print("[4/5] 写入 JSON（带保护）...")
+    REQ_MIN = {
+        "price": 1000, "annual_returns": 100, "annual_returns_real": 100,
+        "annual_distribution": 2, "annualized_matrix": 50,
+        "annualized_matrix_tr": 50, "drawdown": 1000, "volatility": 500,
+        "cape": 500, "vix": 100, "eps": 100, "bull_bear_phases": 10,
+        "rolling_returns": 500, "rolling_returns_tr": 50, "total_return": 500,
+        "dividend_yield": 500, "yield_spread": 500, "erp": 500,
+        "intrayear_drawdown": 50, "recessions": 1, "treasury_yield": 500,
+        "spy_pe": 500, "spy_pb": 50, "analysis_price": 1000, "annual_stats": 2,
+    }
+    keys = ["price", "annual_returns", "annual_returns_real", "annual_distribution",
+            "annual_stats", "annualized_matrix", "annualized_matrix_tr", "drawdown",
+            "volatility", "cape", "vix", "eps", "bull_bear_phases", "rolling_returns",
+            "rolling_returns_tr", "total_return", "dividend_yield", "yield_spread",
+            "erp", "intrayear_drawdown", "recessions", "treasury_yield",
+            "spy_pe", "spy_pb", "analysis_price"]
+
+    final = {}
+    guarded = 0
+    for name in keys:
+        before = payload[name]
+        final[name] = write_or_keep(name, before, REQ_MIN.get(name, 0))
+        if final[name] is not before:
+            guarded += 1
+    final["realtime"] = write_or_keep("realtime", payload["realtime"], 1)
+    if guarded:
+        print(f"  [guard] 共 {guarded} 项因数据异常保留旧值")
+
+    final["meta"] = {"generated_at": payload["generated_at"], "source": payload["source"]}
+    with open(os.path.join(DATA_DIR, "meta.json"), "w", encoding="utf-8") as f:
+        json.dump(final["meta"], f, ensure_ascii=False)
 
     # 额外生成 data/data.js，供 file:// 双击打开时用 <script> 加载（绕过 fetch 跨域限制）
-    js_payload = {
-        "price": payload["price"],
-        "annual_returns": payload["annual_returns"],
-        "annual_distribution": payload["annual_distribution"],
-        "annualized_matrix": payload["annualized_matrix"],
-        "drawdown": payload["drawdown"],
-        "volatility": payload["volatility"],
-        "cape": payload["cape"],
-        "vix": payload["vix"],
-        "eps": payload["eps"],
-        "bull_bear_phases": payload["bull_bear_phases"],
-        "analysis_price": payload["analysis_price"],
-        "rolling_returns": payload["rolling_returns"],
-        "total_return": payload["total_return"],
-        "dividend_yield": payload["dividend_yield"],
-        "yield_spread": payload["yield_spread"],
-        "intrayear_drawdown": payload["intrayear_drawdown"],
-        "recessions": payload["recessions"],
-        "treasury_yield": payload["treasury_yield"],
-        "spy_pe": payload["spy_pe"],
-        "spy_pb": payload["spy_pb"],
-        "realtime": payload["realtime"],
-        "meta": {"generated_at": payload["generated_at"], "source": payload["source"]},
-    }
+    # 用 final（可能已回填旧值）而不是 payload，确保前端与磁盘 json 完全一致
+    js_payload = final
     fp = os.path.join(DATA_DIR, "data.js")
     with open(fp, "w", encoding="utf-8") as f:
         f.write("window.BIG_PICTURE_DATA = ")
         f.write(json.dumps(js_payload, ensure_ascii=False))
         f.write(";\n")
-
-    save_snapshot(
-        {"last": vix_last, "last_date": vix_last_date,
-         "count": len(vix_series) if vix_series else 0, "source": vix_src},
-        {"last": cape_payload["last"], "last_date": cape_payload["last_date"],
-         "count": len(cape_payload["series"]), "source": cape_payload["source"]},
-        {"last": eps_payload["last"], "last_date": eps_payload["last_date"],
-         "count": len(eps_payload["series"]), "source": eps_payload["source"]},
-    )
 
     print("完成。SPX 最新：", payload["realtime"].get("spx_last", "未取到"),
           " CAPE 最新：", payload["cape"]["last"],

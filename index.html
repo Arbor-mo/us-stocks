@@ -50,7 +50,7 @@
       <div class="panel-header">
         <div>
           <h2 class="panel-title">S&P 500 长周期走势</h2>
-          <p class="panel-desc">自 1871 年以来 · 支持价格、对数、百分比三种视角</p>
+          <p class="panel-desc">自 1871 年以来 · 支持价格、对数、百分比、实际价格四种视角</p>
         </div>
         <div class="panel-controls">
           <div class="btn-group" id="priceRangeToggle">
@@ -67,6 +67,7 @@
             <button class="btn active" data-scale="price">价格</button>
             <button class="btn" data-scale="log">对数</button>
             <button class="btn" data-scale="pct">百分比</button>
+            <button class="btn" data-scale="real">实际价格</button>
           </div>
         </div>
       </div>
@@ -87,6 +88,10 @@
             <button class="btn active" data-metric="pe">市盈率 PE</button>
             <button class="btn" data-metric="pb">市净率 PB</button>
           </div>
+          <div class="btn-group" id="valuationScaleToggle">
+            <button class="btn" data-scale="linear">线性</button>
+            <button class="btn active" data-scale="log">对数</button>
+          </div>
         </div>
       </div>
       <div class="chart-container chart-medium" id="chartValuation"></div>
@@ -99,7 +104,7 @@
       <div class="panel-header">
         <div>
           <h2 class="panel-title">S&P 500 席勒市盈率（CAPE）</h2>
-          <p class="panel-desc">用过去 10 年经通胀调整后的平均盈利做分母，平滑景气波动 · 月度 1871 至今 · 每日自动更新 · 左轴 CAPE（数值）叠加右轴标普500点位（对数）</p>
+          <p class="panel-desc">过去 10 年通胀调整盈利均值做分母 · 1871 至今月度 · 每日更新 · 左轴 CAPE，右轴标普（对数）</p>
         </div>
       </div>
       <div class="chart-container chart-medium" id="chartCape"></div>
@@ -144,7 +149,7 @@
       <div class="panel-header">
         <div>
           <h2 class="panel-title">S&P 500 年度回报分布</h2>
-          <p class="panel-desc">每一年按涨幅装入区间 · 平均约 10%，但单个年份极少落在均值附近</p>
+          <p class="panel-desc">每一年按价格涨幅装入区间 · 均值与中位数见下方读数 · 单一年份极少落在均值附近</p>
         </div>
       </div>
       <div class="chart-container chart-medium" id="chartAnnualDist"></div>
@@ -157,7 +162,13 @@
       <div class="panel-header">
         <div>
           <h2 class="panel-title">S&P 500 跨年持有年化收益率</h2>
-          <p class="panel-desc">横轴买入年 → 纵轴卖出年的年化收益率 · 按年末点位估算，不含股息</p>
+          <p class="panel-desc">横轴买入年 → 纵轴卖出年的年化收益率 · 可切换价格口径与总回报口径</p>
+        </div>
+        <div class="panel-controls">
+          <div class="btn-group" id="matrixToggle">
+            <button class="btn active" data-mode="price">价格回报</button>
+            <button class="btn" data-mode="total">总回报</button>
+          </div>
         </div>
       </div>
       <div class="annualized-matrix-container" id="annualizedMatrix"></div>
@@ -209,7 +220,7 @@
       <div class="panel-header">
         <div>
           <h2 class="panel-title">S&P 500 波动率</h2>
-          <p class="panel-desc">20 日与 60 日年化波动率 · 灰色区间表示 NBER 经济衰退</p>
+          <p class="panel-desc">20 日与 60 日年化波动率 · 日频数据下降级为月频时，窗口自动变为 20/60 个月 · 灰色区间为 NBER 衰退</p>
         </div>
       </div>
       <div class="chart-container chart-medium" id="chartVolatility"></div>
@@ -246,8 +257,14 @@
     <div class="panel-inner">
       <div class="panel-header">
         <div>
-          <h2 class="panel-title">股债利差（股息率 − 10年期国债收益率）</h2>
-          <p class="panel-desc">股票与债券的相对性价比 · 利差为正表示股票相对债券更便宜 · 月度 1871 至今</p>
+          <h2 class="panel-title">股债利差</h2>
+          <p class="panel-desc">盈利收益率（1/CAPE）− 10Y 为默认口径，衡量股债相对性价比 · 股息率口径受分红率长期下滑污染，仅作参考</p>
+        </div>
+        <div class="panel-controls">
+          <div class="btn-group" id="spreadToggle">
+            <button class="btn active" data-mode="erp">盈利收益率 − 10Y</button>
+            <button class="btn" data-mode="dy">股息率 − 10Y</button>
+          </div>
         </div>
       </div>
       <div class="chart-container chart-medium" id="chartYieldSpread"></div>
@@ -272,7 +289,13 @@
       <div class="panel-header">
         <div>
           <h2 class="panel-title">滚动收益率</h2>
-          <p class="panel-desc">任意时点往回看 N 年的年化回报</p>
+          <p class="panel-desc">任意时点往回看 N 年的年化回报 · 默认总回报（含股息再投资）</p>
+        </div>
+        <div class="panel-controls">
+          <div class="btn-group" id="rollingToggle">
+            <button class="btn active" data-mode="total">总回报</button>
+            <button class="btn" data-mode="price">价格回报</button>
+          </div>
         </div>
       </div>
       <div class="chart-container chart-medium" id="chartRolling"></div>

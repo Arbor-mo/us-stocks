@@ -21,7 +21,7 @@
       type: "category",
       data: dates,
       axisLine: { lineStyle: { color: "#2a313b" } },
-      axisLabel: { color: TEXT, hideOverlap: true, showMaxLabel: true },
+      axisLabel: { color: TEXT, hideOverlap: true, showMaxLabel: true, margin: 16 },
       splitLine: { show: false },
     };
   }
@@ -196,6 +196,18 @@
       // 「全部」区间 = 1871 起月度 + 1927 起每日（前段月度补足早期，近期保持每日）；
       // 其余区间直接取每日切片
       const r = RANGES.find((x) => x.key === currentRange);
+
+      // 实际价格视角：改用 CPI 调整后的月度序列（1871 至今）
+      if (currentScale === "real") {
+        const rd = objOf(price.real || {});
+        if (!rd.length) return monthly;
+        const endTs = new Date(rd[rd.length - 1].date).getTime();
+        const cutoff = endTs - r.days * 86400000;
+        return rd.filter((d) => new Date(d.date).getTime() >= cutoff);
+      }
+
+      if (!daily.length) return monthly;
+
       const end = daily[daily.length - 1].date;
       const cutoff = new Date(end).getTime() - r.days * 86400000;
       const dailySlice = daily.filter((d) => new Date(d.date).getTime() >= cutoff);
@@ -282,7 +294,9 @@
       const firstDate = data[0].date;
       const years = (new Date(data[data.length - 1].date) - new Date(data[0].date)) / (365.25 * 24 * 3600 * 1000);
       const cagr = years > 0 ? (Math.pow(last / first, 1 / years) - 1) * 100 : 0;
-      const granularity = currentRange === "all" ? "月度1871-1926 + 每日1927起" : "每日";
+      const granularity = currentScale === "real"
+        ? "月度（CPI 调整）"
+        : (currentRange === "all" ? "月度1871-1926 + 每日1927起" : "每日");
       document.getElementById("priceSummary").innerHTML = `
         <div class="metric"><div class="metric-label">最新点位（${lastDate}）</div><div class="metric-value">${fmt(last)}</div></div>
         <div class="metric"><div class="metric-label">区间起点（${firstDate}）</div><div class="metric-value">${fmt(first)}</div></div>
@@ -307,6 +321,7 @@
         btn.classList.add("active");
         currentScale = btn.dataset.scale;
         chart.setOption(build(), true);
+        renderSummary();
       });
     });
   }
@@ -317,38 +332,76 @@
     const pb = objOf(spy_pb);
     const chart = echarts.init(document.getElementById("chartValuation"));
     let current = "pe";
+    let scaleMode = "log";
 
     function draw() {
       const data = current === "pe" ? pe : pb;
+      const raw = data.map((d) => d.value);
       const color = current === "pe" ? AMBER : BLUE;
-      const mean = data.reduce((a, b) => a + b.value, 0) / data.length;
+      const mean = raw.reduce((a, b) => a + b, 0) / raw.length;
+
+      // 对数视角：把值映射到 log 等距刻度后，再用线性轴绘制
+      let logBase = null;
+      let logStep = null;
+      let yAxis = valAxis({ scale: true });
+
+      if (scaleMode === "log" && raw.length) {
+        const vmin = Math.min(...raw);
+        const vmax = Math.max(...raw);
+        const plan = logTickPlan(vmin, vmax);
+        if (plan && plan.mode === "log") {
+          logStep = Math.log10(plan.ratio);
+          logBase = Math.log10(plan.min);
+          const k = Math.round((Math.log10(plan.max) - logBase) / logStep);
+          yAxis = valAxis({
+            min: 0, max: k, interval: 1,
+            axisLabel: { color: TEXT, formatter: (v) => fmtPow10(logBase + v * logStep) },
+          });
+        } else if (plan && plan.mode === "value") {
+          yAxis = valAxis({
+            min: plan.min, max: plan.max, interval: plan.step,
+            axisLabel: { color: TEXT, formatter: fmtInt },
+          });
+        }
+      }
+
+      const toAxis = (v) => (logBase == null ? v : (Math.log10(v) - logBase) / logStep);
+      const toVal = (p) => (logBase == null ? p : Math.pow(10, logBase + p * logStep));
+
       chart.setOption({
         grid: { left: 60, right: 64, top: 30, bottom: 78 },
         xAxis: catAxis(data.map((d) => d.date)),
-        yAxis: valAxis({ scale: true }),
+        yAxis,
         series: [{
-          type: "line", data: data.map((d) => d.value), showSymbol: false,
+          type: "line", data: raw.map(toAxis), showSymbol: false,
           lineStyle: { color, width: 1.4 }, areaStyle: { opacity: 0.10, color },
           markLine: {
             silent: true, symbol: "none",
             label: { color: TEXT, formatter: "均值 " + mean.toFixed(1) },
             lineStyle: { color: TEXT, type: "dashed" },
-            data: [{ yAxis: mean }],
+            data: [{ yAxis: toAxis(mean) }],
           },
         }],
-        tooltip: { trigger: "axis", valueFormatter: (v) => fmt(v) },
+        tooltip: {
+          trigger: "axis",
+          formatter: (p) => `${p[0].axisValue}<br>${current === "pe" ? "PE" : "PB"} ${fmt(toVal(p[0].value))}`,
+        },
       }, true);
 
       const last = data[data.length - 1].value;
       const lastDate = data[data.length - 1].date;
-      const max = Math.max(...data.map((d) => d.value));
-      const min = Math.min(...data.map((d) => d.value));
+      const max = Math.max(...raw);
+      const min = Math.min(...raw);
       document.getElementById("valuationSummary").innerHTML = `
         <div class="metric"><div class="metric-label">最新 ${current === "pe" ? "PE" : "PB"}（${lastDate}）</div><div class="metric-value">${fmt(last)}</div></div>
         <div class="metric"><div class="metric-label">历史均值</div><div class="metric-value">${fmt(mean, 1)}</div></div>
         <div class="metric"><div class="metric-label">历史最高</div><div class="metric-value negative">${fmt(max, 1)}</div></div>
         <div class="metric"><div class="metric-label">历史最低</div><div class="metric-value positive">${fmt(min, 1)}</div></div>
       `;
+
+      // PB 不提供对数选项：跨度仅 3.3 倍，无圆整等比刻度可用
+      const scaleWrap = document.getElementById("valuationScaleToggle");
+      if (scaleWrap) scaleWrap.style.display = current === "pb" ? "none" : "";
     }
     draw();
     document.querySelectorAll("#valuationToggle .btn").forEach((btn) => {
@@ -356,6 +409,14 @@
         document.querySelectorAll("#valuationToggle .btn").forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
         current = btn.dataset.metric;
+        draw();
+      });
+    });
+    document.querySelectorAll("#valuationScaleToggle .btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#valuationScaleToggle .btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        scaleMode = btn.dataset.scale;
         draw();
       });
     });
@@ -454,7 +515,7 @@
   }
 
   // ---------- 年度回报 ----------
-  function renderAnnual(annual, totalReturn) {
+  function renderAnnual(annual, totalReturn, stats) {
     const years = Object.keys(annual).map(Number).sort((a, b) => a - b);
     const values = years.map((y) => annual[String(y)]);
 
@@ -485,7 +546,7 @@
       const xLabels = ys.map((y) => (y === lastYear && y === currentYear ? y + " YTD" : y));
       chart.setOption({
         grid: { left: 60, right: 64, top: 30, bottom: 78 },
-        xAxis: { type: "category", data: xLabels, axisLine: { lineStyle: { color: "#2a313b" } }, axisLabel: { color: TEXT, hideOverlap: true } },
+        xAxis: { type: "category", data: xLabels, axisLine: { lineStyle: { color: "#2a313b" } }, axisLabel: { color: TEXT, hideOverlap: true, margin: 16 } },
         yAxis: valAxis({ axisLabel: { color: TEXT, formatter: "{value}%" } }),
         series: [{
           type: "bar", data: vals.map((v) => ({ value: v, itemStyle: { color: v >= 0 ? GREEN : RED } })),
@@ -494,19 +555,22 @@
         tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
       }, true);
 
-      const pos = vals.filter((v) => v >= 0).length;
-      const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-      const best = Math.max(...vals);
-      const worst = Math.min(...vals);
-      const bestYear = ys[vals.indexOf(best)];
-      const worstYear = ys[vals.indexOf(worst)];
+      // 统计时排除未完成年度（图中仍展示并标 YTD）
+      const exclYear = (stats && stats.excluded_year) || null;
+      const pairs = ys.map((y, i) => ({ y, v: vals[i] })).filter((o) => o.v != null && o.y !== exclYear);
+      const denom = pairs.length || 1;
+      const pos = pairs.filter((o) => o.v >= 0).length;
+      const avg = pairs.reduce((a, b) => a + b.v, 0) / denom;
+      const bestP = pairs.reduce((a, b) => (b.v > a.v ? b : a), pairs[0] || { y: "-", v: 0 });
+      const worstP = pairs.reduce((a, b) => (b.v < a.v ? b : a), pairs[0] || { y: "-", v: 0 });
       const label = useTr ? "总回报（含股息）" : "价格回报";
+      const noteText = exclYear ? "（不含 " + exclYear + " YTD）" : "";
       document.getElementById("annualSummary").innerHTML = `
         <div class="metric"><div class="metric-label">口径</div><div class="metric-value">${label}</div></div>
-        <div class="metric"><div class="metric-label">上涨年份占比</div><div class="metric-value">${(pos / vals.length * 100).toFixed(0)}%</div></div>
-        <div class="metric"><div class="metric-label">年度均值</div><div class="metric-value ${avg >= 0 ? "positive" : "negative"}">${fmtPct(avg)}</div></div>
-        <div class="metric"><div class="metric-label">最好年份（${bestYear}）</div><div class="metric-value positive">+${fmtPct(best)}</div></div>
-        <div class="metric"><div class="metric-label">最差年份（${worstYear}）</div><div class="metric-value negative">${fmtPct(worst)}</div></div>
+        <div class="metric"><div class="metric-label">上涨年份占比</div><div class="metric-value">${(pos / denom * 100).toFixed(0)}%</div></div>
+        <div class="metric"><div class="metric-label">年度均值${noteText}</div><div class="metric-value ${avg >= 0 ? "positive" : "negative"}">${fmtPct(avg)}</div></div>
+        <div class="metric"><div class="metric-label">最好年份（${bestP.y}）</div><div class="metric-value positive">+${fmtPct(bestP.v)}</div></div>
+        <div class="metric"><div class="metric-label">最差年份（${worstP.y}）</div><div class="metric-value negative">${fmtPct(worstP.v)}</div></div>
       `;
     }
     draw();
@@ -522,7 +586,7 @@
   }
 
   // ---------- 年度回报分布 ----------
-  function renderAnnualDist(dist) {
+  function renderAnnualDist(dist, annual, stats) {
     const chart = echarts.init(document.getElementById("chartAnnualDist"));
     const labels = dist.labels;
     const counts = labels.map((l) => dist.counts[l]);
@@ -534,7 +598,7 @@
     });
     chart.setOption({
       grid: { left: 50, right: 64, top: 30, bottom: 80 },
-      xAxis: { type: "category", data: labels, axisLine: { lineStyle: { color: "#2a313b" } }, axisLabel: { color: TEXT, interval: 0, fontSize: 10 } },
+      xAxis: { type: "category", data: labels, axisLine: { lineStyle: { color: "#2a313b" } }, axisLabel: { color: TEXT, interval: 0, fontSize: 10, margin: 14 } },
       yAxis: valAxis(),
       series: [{
         type: "bar", data: counts.map((c, i) => ({ value: c, itemStyle: { color: colors[i] } })),
@@ -542,36 +606,63 @@
       }],
       tooltip: { trigger: "axis", axisPointer: { type: "shadow" }, formatter: (p) => `${p[0].name}: ${p[0].value} 年（${(p[0].value / total * 100).toFixed(0)}%）` },
     });
+    const st = stats || {};
+    const mean = st.mean;
+    const median = st.median;
+    const excl = st.excluded_year
+      ? `<div class="metric"><div class="metric-label">未计入</div><div class="metric-value">${st.excluded_year} YTD</div></div>`
+      : "";
+
     document.getElementById("distSummary").innerHTML = `
       <div class="metric"><div class="metric-label">统计年数</div><div class="metric-value">${total}</div></div>
+      <div class="metric"><div class="metric-label">年度均值（价格口径）</div><div class="metric-value ${mean >= 0 ? "positive" : "negative"}">${mean == null ? "-" : fmtPct(mean)}</div></div>
+      <div class="metric"><div class="metric-label">年度中位数</div><div class="metric-value ${median >= 0 ? "positive" : "negative"}">${median == null ? "-" : fmtPct(median)}</div></div>
       <div class="metric"><div class="metric-label">正收益年份</div><div class="metric-value positive">${labels.slice(4).reduce((a, l) => a + dist.counts[l], 0)} 年</div></div>
       <div class="metric"><div class="metric-label">负收益年份</div><div class="metric-value negative">${labels.slice(0, 4).reduce((a, l) => a + dist.counts[l], 0)} 年</div></div>
+      ${excl}
     `;
   }
 
   // ---------- 年化矩阵 ----------
-  function renderMatrix(matrix) {
-    const years = matrix.years;
-    const mat = matrix.matrix;
+  function renderMatrix(matrix, matrixTr) {
     const container = document.getElementById("annualizedMatrix");
-    let html = '<table class="matrix-table"><thead><tr><th class="corner">买入\\卖出</th>';
-    years.forEach((y) => { html += `<th>${y}</th>`; });
-    html += "</tr></thead><tbody>";
-    for (let i = 0; i < years.length; i++) {
-      html += `<tr><td class="row-label">${years[i]}</td>`;
-      for (let j = 0; j < years.length; j++) {
-        const v = mat[i][j];
-        if (v == null) {
-          html += '<td></td>';
-        } else {
-          const color = v >= 0 ? `rgba(34,197,94,${Math.min(0.15 + Math.abs(v) / 25, 1)})` : `rgba(220,38,38,${Math.min(0.15 + Math.abs(v) / 25, 1)})`;
-          html += `<td><span class="matrix-cell" style="background:${color}" title="买入 ${years[i]} 卖出 ${years[j]}：${v.toFixed(1)}%">${v.toFixed(0)}%</span></td>`;
+    let mode = "price";
+
+    function draw() {
+      let src = mode === "total" ? matrixTr : matrix;
+      if (!src || !src.years) src = matrix;
+      if (!src || !src.years) return;
+      const years = src.years;
+      const mat = src.matrix;
+      let html = '<table class="matrix-table"><thead><tr><th class="corner">买入\\卖出</th>';
+      years.forEach((y) => { html += `<th>${y}</th>`; });
+      html += "</tr></thead><tbody>";
+      for (let i = 0; i < years.length; i++) {
+        html += `<tr><td class="row-label">${years[i]}</td>`;
+        for (let j = 0; j < years.length; j++) {
+          const v = mat[i][j];
+          if (v == null) {
+            html += '<td></td>';
+          } else {
+            const color = v >= 0 ? `rgba(34,197,94,${Math.min(0.15 + Math.abs(v) / 25, 1)})` : `rgba(220,38,38,${Math.min(0.15 + Math.abs(v) / 25, 1)})`;
+            html += `<td><span class="matrix-cell" style="background:${color}" title="买入 ${years[i]} 卖出 ${years[j]}：${v.toFixed(1)}%">${v.toFixed(0)}%</span></td>`;
+          }
         }
+        html += "</tr>";
       }
-      html += "</tr>";
+      html += "</tbody></table>";
+      container.innerHTML = html;
     }
-    html += "</tbody></table>";
-    container.innerHTML = html;
+    draw();
+
+    document.querySelectorAll("#matrixToggle .btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#matrixToggle .btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        mode = btn.dataset.mode;
+        draw();
+      });
+    });
   }
 
   // ---------- 回撤 ----------
@@ -819,23 +910,43 @@
   }
 
   // ---------- 滚动收益率 ----------
-  function renderRolling(rolling) {
+  function renderRolling(priceRolling, totalRolling) {
     const chart = echarts.init(document.getElementById("chartRolling"));
-    // 固定滚动窗口 = 10 年
-    const allData = objOf(rolling["10"]);
+    let mode = "total";
 
     function draw() {
-      const data = allData;
+      const src = mode === "total" ? totalRolling : priceRolling;
+      const data = objOf((src || {})["10"]);
+      if (!data.length) return;
+      const color = mode === "total" ? GREEN : BLUE;
       chart.setOption({
         grid: { left: 60, right: 64, top: 30, bottom: 78 },
         xAxis: catAxis(data.map((d) => d.date)),
         yAxis: valAxis({ axisLabel: { color: TEXT, formatter: "{value}%" } }),
-        series: [{ type: "line", data: data.map((d) => d.value), showSymbol: false, lineStyle: { color: BLUE, width: 1.5 } }],
+        series: [{
+          type: "line", data: data.map((d) => d.value), showSymbol: false,
+          lineStyle: { color, width: 1.5 },
+          markLine: {
+            silent: true, symbol: "none",
+            label: { color: TEXT, formatter: "零轴" },
+            lineStyle: { color: TEXT, type: "dashed" },
+            data: [{ yAxis: 0 }],
+          },
+        }],
         tooltip: { trigger: "axis", valueFormatter: (v) => fmtPct(v, 1) },
         dataZoom: [{ type: "inside" }],
       }, true);
     }
     draw();
+
+    document.querySelectorAll("#rollingToggle .btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#rollingToggle .btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        mode = btn.dataset.mode;
+        draw();
+      });
+    });
   }
 
   // ---------- 年内最大回撤 vs 全年涨幅 ----------
@@ -855,7 +966,7 @@
           { name: "年内最大回撤", itemStyle: { color: AMBER } },
         ],
       },
-      xAxis: { type: "category", data: years.map(String), axisLine: { lineStyle: { color: "#2a313b" } }, axisLabel: { color: TEXT, hideOverlap: true } },
+      xAxis: { type: "category", data: years.map(String), axisLine: { lineStyle: { color: "#2a313b" } }, axisLabel: { color: TEXT, hideOverlap: true, margin: 16 } },
       yAxis: valAxis({ axisLabel: { color: TEXT, formatter: "{value}%" } }),
       series: [
         {
@@ -926,55 +1037,87 @@
   }
 
   // ---------- 股债利差 ----------
-  function renderYieldSpread(spread) {
+  function renderYieldSpread(spread, erp) {
     const chart = echarts.init(document.getElementById("chartYieldSpread"));
     charts.yieldSpread = chart;
-    const data = objOf(spread || {}).filter((d) => d.value != null);
-    if (!data.length) return;
+    let mode = "erp";
 
-    const last = data[data.length - 1];
-    const mean = data.reduce((a, b) => a + b.value, 0) / data.length;
-    const max = Math.max(...data.map((d) => d.value));
-    const min = Math.min(...data.map((d) => d.value));
+    function draw() {
+      const raw = mode === "erp" ? erp : spread;
+      const data = objOf(raw || {}).filter((d) => d.value != null);
+      if (!data.length) return;
 
-    chart.setOption({
-      grid: { left: 60, right: 64, top: 30, bottom: 78 },
-      xAxis: catAxis(data.map((d) => d.date)),
-      yAxis: valAxis({ axisLabel: { color: TEXT, formatter: "{value}%" } }),
-      series: [{
-        type: "line", data: data.map((d) => d.value), showSymbol: false,
-        lineStyle: { color: BLUE, width: 1.4 }, areaStyle: { opacity: 0.10, color: BLUE },
-        markLine: {
-          silent: true, symbol: "none",
-          label: { color: TEXT, formatter: "零轴" },
-          lineStyle: { color: TEXT, type: "dashed" },
-          data: [{ yAxis: 0 }],
-        },
-      }],
-      tooltip: { trigger: "axis", valueFormatter: (v) => fmt(v, 2) + " 个百分点" },
-      dataZoom: [{ type: "inside" }],
+      const last = data[data.length - 1];
+      const mean = data.reduce((a, b) => a + b.value, 0) / data.length;
+      const max = Math.max(...data.map((d) => d.value));
+      const min = Math.min(...data.map((d) => d.value));
+      const color = mode === "erp" ? GREEN : BLUE;
+
+      chart.setOption({
+        grid: { left: 60, right: 64, top: 30, bottom: 78 },
+        xAxis: catAxis(data.map((d) => d.date)),
+        yAxis: valAxis({ axisLabel: { color: TEXT, formatter: "{value}%" } }),
+        series: [{
+          type: "line", data: data.map((d) => d.value), showSymbol: false,
+          lineStyle: { color, width: 1.4 }, areaStyle: { opacity: 0.10, color },
+          markLine: {
+            silent: true, symbol: "none",
+            label: { color: TEXT, formatter: "零轴" },
+            lineStyle: { color: TEXT, type: "dashed" },
+            data: [{ yAxis: 0 }],
+          },
+        }],
+        tooltip: { trigger: "axis", valueFormatter: (v) => fmt(v, 2) + " 个百分点" },
+        dataZoom: [{ type: "inside" }],
+      }, true);
+
+      const label = mode === "erp" ? "盈利收益率 − 10Y" : "股息率 − 10Y";
+      document.getElementById("yieldSpreadSummary").innerHTML = `
+        <div class="metric"><div class="metric-label">口径</div><div class="metric-value">${label}</div></div>
+        <div class="metric"><div class="metric-label">最新利差（${last.date}）</div><div class="metric-value ${last.value >= 0 ? "positive" : "negative"}">${fmt(last.value, 2)} 个百分点</div></div>
+        <div class="metric"><div class="metric-label">历史均值</div><div class="metric-value">${fmt(mean, 2)}</div></div>
+        <div class="metric"><div class="metric-label">历史最高（股票最便宜）</div><div class="metric-value positive">${fmt(max, 2)}</div></div>
+        <div class="metric"><div class="metric-label">历史最低（股票最贵）</div><div class="metric-value negative">${fmt(min, 2)}</div></div>
+      `;
+    }
+    draw();
+
+    document.querySelectorAll("#spreadToggle .btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("#spreadToggle .btn").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        mode = btn.dataset.mode;
+        draw();
+      });
     });
-
-    document.getElementById("yieldSpreadSummary").innerHTML = `
-      <div class="metric"><div class="metric-label">最新利差（${last.date}）</div><div class="metric-value ${last.value >= 0 ? "positive" : "negative"}">${fmt(last.value, 2)} 个百分点</div></div>
-      <div class="metric"><div class="metric-label">历史均值</div><div class="metric-value">${fmt(mean, 2)}</div></div>
-      <div class="metric"><div class="metric-label">历史最高（股票最便宜）</div><div class="metric-value positive">${fmt(max, 2)}</div></div>
-      <div class="metric"><div class="metric-label">历史最低（股票最贵）</div><div class="metric-value negative">${fmt(min, 2)}</div></div>
-    `;
   }
 
   // ---------- Hero 徽章 ----------
-  function renderBadges(cape, realtime) {
+  function renderBadges(cape, realtime, price) {
     const el = document.getElementById("heroBadges");
-    const capeDates = Object.keys(cape.series || {});
+    const capeDates = Object.keys(cape.series || {}).sort();
     const capeDate = capeDates.length ? capeDates[capeDates.length - 1] : "";
+
+    // 最新点位优先取日线最后一点（FRED 的 SP500 常滞后数周）
+    const dailyKeys = Object.keys((price && price.daily) || {}).sort();
+    const lastDk = dailyKeys.length ? dailyKeys[dailyKeys.length - 1] : null;
+    const spxVal = lastDk ? price.daily[lastDk] : realtime.spx_last;
+    const spxDate = lastDk || realtime.spx_last_date;
+
     let html = "";
-    if (realtime.spx_last) {
-      html += `<div class="badge"><b>${fmt(realtime.spx_last)}</b>S&P 500 最新（${realtime.spx_last_date}）</div>`;
+    if (spxVal) {
+      html += `<div class="badge"><b>${fmt(spxVal)}</b>S&P 500 最新（${spxDate}）</div>`;
     }
     html += `<div class="badge"><b>${cape.last}</b>席勒市盈率 CAPE（${capeDate}）</div>`;
     if (realtime.vix_last) {
-      html += `<div class="badge"><b>${fmt(realtime.vix_last)}</b>VIX 恐慌指数（${realtime.vix_last_date || ""}）<span class="info-icon">i<span class="info-tooltip"><span class="tt-title">VIX 恐慌指数</span>衡量市场对未来 30 天 S&P 500 波动率的预期，反映恐慌情绪。<br><br><b>判断高低的标准：</b><br>• &lt; 15：极平静，市场自满<br>• 15–20：正常区间<br>• 20–30：情绪紧张，需警惕<br>• 30–40：恐慌，常伴随急跌<br>• &gt; 40：极端恐慌，往往接近底部</span></span></div>`;
+      const vixRows = [
+        ["&lt; 15", "极平静，市场自满"],
+        ["15–20", "正常区间"],
+        ["20–30", "情绪紧张，需警惕"],
+        ["30–40", "恐慌，常伴随急跌"],
+        ["&gt; 40", "极端恐慌，往往接近底部"],
+      ].map(([k, v]) => `<span class="tt-row"><span class="tt-dot">•</span><span class="tt-k">${k}：</span><span class="tt-v">${v}</span></span>`).join("");
+      html += `<div class="badge"><b>${fmt(realtime.vix_last)}</b>VIX 恐慌指数（${realtime.vix_last_date || ""}）<span class="info-icon">i<span class="info-tooltip"><span class="tt-title">VIX 恐慌指数</span><span class="tt-desc">衡量市场对未来 30 天 S&amp;P 500 波动率的预期，反映恐慌情绪。</span><span class="tt-sub">判断高低的标准</span><span class="tt-list">${vixRows}</span></span></span></div>`;
     }
     el.innerHTML = html;
   }
@@ -988,19 +1131,19 @@
     renderPrice(D.price);
     renderValuation(D.spy_pe, D.spy_pb);
     renderVix(D.vix, D.price);
-    renderAnnual(D.annual_returns, D.total_return);
-    renderAnnualDist(D.annual_distribution);
-    renderMatrix(D.annualized_matrix);
+    renderAnnual(D.annual_returns, D.total_return, D.annual_stats);
+    renderAnnualDist(D.annual_distribution, D.annual_returns, D.annual_stats);
+    renderMatrix(D.annualized_matrix, D.annualized_matrix_tr);
     renderDrawdown(D.drawdown);
     renderVolatility(D.volatility);
     renderCape(D.cape, D.price);
     renderEps(D.eps, D.price);
     renderBullBear(D.bull_bear_phases, D.analysis_price);
-    renderRolling(D.rolling_returns);
+    renderRolling(D.rolling_returns, D.rolling_returns_tr);
     renderIntrayearDrawdown(D.intrayear_drawdown);
     renderTreasury(D.treasury_yield);
-    renderYieldSpread(D.yield_spread);
-    renderBadges(D.cape, D.realtime);
+    renderYieldSpread(D.yield_spread, D.erp);
+    renderBadges(D.cape, D.realtime, D.price);
   }).catch((err) => {
     console.error("加载数据失败", err);
     document.querySelector("#headerFreshness .hf-text").textContent = "数据加载失败，请先运行 fetch_data.py";
